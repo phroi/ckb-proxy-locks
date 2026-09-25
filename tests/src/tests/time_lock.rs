@@ -124,3 +124,69 @@ fn test_time_lock() {
         .expect("pass verification");
     println!("consume cycles: {}", cycles);
 }
+
+#[test]
+fn test_time_lock_rejects_incomparable_since() {
+    let mut context = Context::default();
+
+    let required_lock_script_out_point = context.deploy_cell(ALWAYS_SUCCESS.clone());
+    let required_lock_script = context
+        .build_script(&required_lock_script_out_point, Default::default())
+        .expect("script");
+    let time_lock_out_point = context.deploy_cell(Loader::default().load_binary("time-lock"));
+    let cell_deps = vec![
+        CellDep::new_builder()
+            .out_point(required_lock_script_out_point)
+            .build(),
+        CellDep::new_builder()
+            .out_point(time_lock_out_point.clone())
+            .build(),
+    ];
+
+    // Locked until an absolute timestamp, as in the README
+    let locked_until = Since::from_timestamp(1_000, true).expect("since");
+    let mut args = required_lock_script.calc_script_hash().as_bytes().to_vec();
+    args.extend_from_slice(&locked_until.as_u64().to_le_bytes());
+    let time_lock_script = context
+        .build_script(&time_lock_out_point, Bytes::from(args))
+        .expect("script");
+
+    let verify = |context: &mut Context, since: u64| {
+        let time_locked = context.create_cell(
+            CellOutput::new_builder()
+                .capacity(500u64.pack())
+                .lock(time_lock_script.clone())
+                .build(),
+            Bytes::new(),
+        );
+        let required = context.create_cell(
+            CellOutput::new_builder()
+                .capacity(500u64.pack())
+                .lock(required_lock_script.clone())
+                .build(),
+            Bytes::new(),
+        );
+        let tx = TransactionBuilder::default()
+            .cell_deps(cell_deps.clone())
+            .input(
+                CellInput::new_builder()
+                    .previous_output(time_locked)
+                    .since(since.pack())
+                    .build(),
+            )
+            .input(CellInput::new_builder().previous_output(required).build())
+            .output(CellOutput::new_builder().capacity(1000u64.pack()).build())
+            .output_data(Bytes::new().pack())
+            .build();
+        context.verify_tx(&tx, MAX_CYCLES)
+    };
+
+    // A default since of zero reads as absolute block number 0, a different metric
+    verify(&mut context, 0).expect_err("since zero must not unlock");
+    let block_number = Since::from_block_number(233, true).expect("since");
+    verify(&mut context, block_number.as_u64()).expect_err("block number must not unlock");
+    let relative = Since::from_timestamp(2_000, false).expect("since");
+    verify(&mut context, relative.as_u64()).expect_err("relative timestamp must not unlock");
+    let later = Since::from_timestamp(2_000, true).expect("since");
+    verify(&mut context, later.as_u64()).expect("later absolute timestamp unlocks");
+}

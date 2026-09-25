@@ -37,7 +37,8 @@ pub fn has_lock_time_passed(locked_until: &[u8]) -> bool {
     // all cell inputs must have a since value greater than locked_until
     for since in QueryIter::new(load_input_since, Source::GroupInput) {
         let since = Since::new(since);
-        if since.lt(&locked_until) {
+        // `ge` is false for incomparable values (different metric or absolute/relative flag), unlike `!lt`
+        if !since.ge(&locked_until) {
             return false;
         }
     }
